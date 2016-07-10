@@ -1,0 +1,490 @@
+<html>
+<head>
+	
+<!-- Static Styles -->
+<style type="text/css">
+#canv-holder {
+	position: relative;
+	width: 800px;
+	height: 600px;
+	border: 1px black solid;
+	overflow: hidden;
+}
+#ui-canvas {
+	z-index: 100000;
+}
+canvas {
+	image-rendering: crisp-edges;
+	position: absolute;
+}
+</style>
+
+<!-- Dynamic Styles -->
+<style type="text/css">
+canvas.layers {
+	left: -700px;
+	top: -450px;
+}
+</style>
+<style type="text/css">
+canvas.layers {
+	transform: scale(0.7);
+}
+</style>
+
+<div id="canv-holder">
+<canvas id="ui-canvas"></canvas>
+</div>
+</head>
+<body>
+
+<script>
+
+/*
+
+TODO
+
+- problems rendering the corners (part is cut off)
+- terrain gen breaking height limit
+- ui
+- entities
+- structures
+
+*/
+
+var canvHolder = document.getElementById("canv-holder")
+var canvTranslationStyles = document.styleSheets[1]
+var canvZoomStyles = document.styleSheets[2]
+var uiCanvas = document.getElementById("ui-canvas")
+var uiGr = uiCanvas.getContext("2d")
+
+
+var viewport = {width: 800, height: 600}
+
+var keys = {}
+
+var translation = {x: -700, y: -450}
+var translating = false
+var lastTranslationTime = undefined
+var translationSpeed = 100 //pixels per sec
+
+var zooming = false
+var currentZoom = 0.7
+var targetZoom = 0.7
+var lastZoomTime = undefined
+var zoomSpeed = 0.7 //scale per sec
+var maxZoom = 1.0
+var minZoom = 0.3
+
+var mapSize = Math.pow(2, 8) + 1
+var mapHeight = 40
+var cubeSize = 5
+
+var map = Array(mapSize).fill(0).map( () => Array(mapSize).fill(0).map( () => Array(mapHeight).fill(0) ) )
+
+
+var xMax = (mapSize - 1) * cubeSize * Math.sqrt(3)
+var yMax = (mapSize - 1) * cubeSize + (mapHeight - 1) * cubeSize
+
+var layers = Array(mapHeight).fill(0).map( (_, i) => {
+
+	var oc = document.createElement("canvas")
+	oc.width = xMax
+	oc.height = yMax
+	oc.zIndex = i * 100
+	oc.className = "layers"
+
+	canvHolder.appendChild(oc)
+
+	return oc
+})
+
+uiCanvas.width = xMax
+uiCanvas.height = yMax
+
+var entities = []
+
+function getCube (x, y, z) {
+
+	x = Math.floor(x)
+	y = Math.floor(y)
+	z = Math.floor(z)
+
+	if(x >= mapSize || y >= mapSize || z >= mapHeight || x < 0 || y < 0 || z < 0) {
+		//console.error("Out of bounds map get attempt: x = " + x + ", y = " + y + ", z = " + z)
+
+		return 0
+	}
+	else if(map[x] == undefined || map[x][y] == undefined || map[x][y][z] == undefined) {
+		//console.error("Bad map get attempt: x = " + x + ", y = " + y + ", z = " + z)
+
+		return 0
+	}
+
+	else return map[x][y][z]
+}
+
+function setCube (x, y, z, v) {
+
+	x = Math.floor(x)
+	y = Math.floor(y)
+	z = Math.floor(z)
+	
+
+	if(x >= mapSize || y >= mapSize || z >= mapHeight || x < 0 || y < 0 || z < 0) {
+		//console.error("Out of bounds map set attempt: x = " + x + ", y = " + y + ", z = " + z)
+	}
+	else if(map[x] == undefined || map[x][y] == undefined || map[x][y][z] == undefined) {
+		//console.error("Bad map get attempt: x = " + x + ", y = " + y + ", z = " + z)
+	}
+	else {
+		map[x][y][z] = v
+		//dirtyLayers
+	}
+}
+
+function cubeIsVisible (x, y, z) {
+
+	//return true if potentially visible
+	//return false if definitely not visible
+	//no need to do too much work calculating, just get rid of easy cases
+
+	if(x == 0 || x == mapSize - 1 || y == 0 || y == mapSize - 1 || z == mapHeight - 1) return true
+
+	var above = getCube(x, y, z + 1)
+	if(above == 0) return true
+
+	var left = getCube(x - 1, y, z)
+	if(left == 0) return true
+
+	var right = getCube(x + 1, y, z)
+	if(right == 0) return true
+
+	var top = getCube(x, y - 1, z)
+	if(top == 0) return true
+
+	var bottom = getCube(x, y + 1, z)
+	if(bottom == 0) return true
+
+	return false
+}
+
+function getRenderLocation (x, y, z) {
+
+	var yOffset = (mapSize - 1) * cubeSize / 2 + (mapHeight - 1) * cubeSize
+
+	return {
+		x: x * cubeSize * Math.sqrt(3) / 2 + y * cubeSize * Math.sqrt(3) / 2,
+		y: yOffset + x * cubeSize / 2 - y * cubeSize / 2 - z * cubeSize
+	}
+}
+
+function renderCube (g, x, y, z, type) {
+
+	if(type == 0 || !cubeIsVisible(x, y, z)) return
+
+	var bottom = getRenderLocation(x, y, z)
+	
+	g.strokeStyle = "black"
+	
+
+	g.beginPath()
+	g.moveTo(bottom.x, bottom.y)
+	g.lineTo(bottom.x + cubeSize * Math.sqrt(3) / 2, bottom.y - cubeSize / 2)
+	g.lineTo(bottom.x + cubeSize * Math.sqrt(3) / 2, bottom.y - 3 * cubeSize / 2)
+	g.lineTo(bottom.x, bottom.y - 2 * cubeSize)
+	g.lineTo(bottom.x - cubeSize * Math.sqrt(3) / 2, bottom.y - 3 * cubeSize / 2)
+	g.lineTo(bottom.x - cubeSize * Math.sqrt(3) / 2, bottom.y - cubeSize / 2)
+	g.lineTo(bottom.x, bottom.y)
+
+	g.fillStyle = type == 1 ? "green" : type == 2 ? "blue" : "red"
+	g.fill()
+
+	/*
+	if(type != 2 && (getCube(x + 1, y, z) != type || getCube(x - 1, y, z) != type || getCube(x, y + 1, z) != type || getCube(x, y - 1, z) != type)) {
+		g.lineTo(bottom.x, bottom.y - cubeSize)
+		g.moveTo(bottom.x + cubeSize * Math.sqrt(3) / 2, bottom.y - 3 * cubeSize / 2)
+		g.lineTo(bottom.x, bottom.y - cubeSize)
+		g.lineTo(bottom.x - cubeSize * Math.sqrt(3) / 2, bottom.y - 3 * cubeSize / 2)
+		g.stroke()
+	}
+	*/
+
+	g.beginPath()
+
+	if(getCube(x + 1, y, z) != type) { //BR
+		g.moveTo(bottom.x, bottom.y)
+		g.lineTo(bottom.x + cubeSize * Math.sqrt(3) / 2, bottom.y - cubeSize / 2)
+		g.moveTo(bottom.x, bottom.y - cubeSize)
+		g.lineTo(bottom.x + cubeSize * Math.sqrt(3) / 2, bottom.y - 3 * cubeSize / 2)
+	}
+	if(getCube(x, y - 1, z) != type) { //BL
+		g.moveTo(bottom.x, bottom.y)
+		g.lineTo(bottom.x - cubeSize * Math.sqrt(3) / 2, bottom.y - cubeSize / 2)
+		g.moveTo(bottom.x, bottom.y - cubeSize)
+		g.lineTo(bottom.x - cubeSize * Math.sqrt(3) / 2, bottom.y - 3 * cubeSize / 2)
+	}
+	if(getCube(x - 1, y, z) != type) { //TL
+		g.moveTo(bottom.x, bottom.y - 2 * cubeSize)
+		g.lineTo(bottom.x - cubeSize * Math.sqrt(3) / 2, bottom.y - 3 * cubeSize / 2)
+	}
+	if(getCube(x, y + 1, z) != type) { //TR
+		g.moveTo(bottom.x, bottom.y - 2 * cubeSize)
+		g.lineTo(bottom.x + cubeSize * Math.sqrt(3) / 2, bottom.y - 3 * cubeSize / 2)
+	}
+
+	if(getCube(x + 1, y - 1, z) == 0) {
+		g.moveTo(bottom.x, bottom.y)
+		g.lineTo(bottom.x, bottom.y - cubeSize)
+	}
+
+	if(getCube(x + 1, y, z) == 0) {
+		g.moveTo(bottom.x + cubeSize * Math.sqrt(3) / 2, bottom.y - cubeSize / 2)
+		g.lineTo(bottom.x + cubeSize * Math.sqrt(3) / 2, bottom.y - 3 * cubeSize / 2)	
+	}
+
+	if(getCube(x, y - 1, z) == 0) {
+		g.moveTo(bottom.x - cubeSize * Math.sqrt(3) / 2, bottom.y - cubeSize / 2)
+		g.lineTo(bottom.x - cubeSize * Math.sqrt(3) / 2, bottom.y - 3 * cubeSize / 2)
+	}
+
+	g.stroke()
+}
+
+function renderClear (g) {
+	g.clearRect(0, 0, viewport.width, viewport.height)
+}
+
+function renderMap () {
+
+	for(var z = 0; z < mapHeight; z++) {
+
+		var og = layers[z].getContext("2d")
+
+		renderClear(og)
+
+		for(var x = 0; x < mapSize; x++) {
+			for(var y = mapSize - 1; y >= 0; y--) {
+
+				var cube = getCube(x, y, z)
+
+				renderCube(og, x, y, z, cube)
+			}
+		}
+
+	}
+}
+
+function generateMap () {
+
+	generateTerrain()
+
+	generateWater()
+	
+}
+
+
+function getHighestZ (x, y) {
+
+	for(var z = mapHeight - 1; z >= 0; z--) {
+		if(getCube(x, y, z) != 0) return z
+	}
+
+	return 0
+}
+
+function setCubesBelow (x, y, z, v, override) {
+	for(var i = 0; i <= z; i++)
+		if(override || getCube(x, y, i) == 0)
+			setCube(x, y, i, v)
+}
+
+function generateTerrain (x, y, size, scale) {
+
+	if(arguments.length == 0) {
+		setCubesBelow(0, 0, mapHeight / 2, 1, true)
+		setCubesBelow(0, mapSize - 1, mapHeight / 2, 1, true)
+		setCubesBelow(mapSize - 1, 0, mapHeight / 2, 1, true)
+		setCubesBelow(mapSize - 1, mapSize - 1, mapHeight / 2, 1, true)
+
+		generateTerrain(0, 0, mapSize - 1, mapHeight)
+
+		return
+	}
+	if(size < 2) {
+		return
+	}
+
+	var By = y + size
+	var Rx = x + size
+	var Mx = x + size / 2
+	var My = y + size / 2
+
+	var TLz = getHighestZ(x, y)
+	var TRz = getHighestZ(x + size, y)
+	var BLz = getHighestZ(x, y + size)
+	var BRz = getHighestZ(x + size, y + size)
+
+	var avgM = (TLz + TRz + BLz + BRz) / 4
+	var avgT = (TLz + TRz + avgM) / 3
+	var avgL = (TLz + BLz + avgM) / 3
+	var avgR = (TRz + BRz + avgM) / 3
+	var avgB = (BLz + BRz + avgM) / 3
+
+	setCubesBelow(Mx, My, avgM + terrainRand(scale), 1)
+	setCubesBelow(Mx, y, avgT + terrainRand(scale), 1)
+	setCubesBelow(Rx, My, avgR + terrainRand(scale), 1)
+	setCubesBelow(x, My, avgL + terrainRand(scale), 1)
+	setCubesBelow(Mx, By, avgB + terrainRand(scale), 1)
+
+	generateTerrain(x, y, size / 2, scale / 2)
+	generateTerrain(x, y + size / 2, size / 2, scale / 2)
+	generateTerrain(x + size / 2, y, size / 2, scale / 2)
+	generateTerrain(x + size / 2, y + size / 2, size / 2, scale / 2)
+}
+
+function terrainRand (scale) {
+
+	return scale / 2 - Math.random() * scale
+}
+
+function generateWater () {
+
+	for(var x = 0; x < mapSize; x++) {
+		for(var y = 0; y < mapSize; y++) {
+			setCubesBelow(x, y, mapHeight / 2, 2)
+		}
+	}
+}
+
+
+document.body.onkeydown = function (e) {
+	var key = e.keyCode
+
+	keys[key] = true
+
+}
+
+document.body.onkeyup = function (e) {
+	var key = e.keyCode
+
+	keys[key] = false
+}
+
+function animationInterval (time) {
+
+	uiGr.fillStyle = "white"
+	uiGr.fillRect(10, 10, 300, 50)
+	uiGr.fillStyle = "black"
+	uiGr.fillText("translating: " + translating + " | translation: [" + translation.x + ", " + translation.y + "]", 25, 25)
+	uiGr.fillText("zooming: " + zooming + " | currentZoom: " + currentZoom.toFixed(3) + " | targetZoom: " + targetZoom.toFixed(3), 25, 35)
+
+
+	translating = (keys[37] != keys[39] || keys[38] != keys[40])
+
+	zooming = (targetZoom != currentZoom)
+
+	if(translating) {
+
+		var translationTimeDiff = time - lastTranslationTime
+
+		lastTranslationTime = time
+
+		if(!isNaN(translationTimeDiff)) {
+
+			var pixelDiff = translationTimeDiff / 1000 * translationSpeed
+
+			if(keys[37] && !keys[39]) translate(translation.x + pixelDiff, translation.y)
+			else if(keys[39] && !keys[37]) translate(translation.x - pixelDiff, translation.y)
+			if(keys[38] && !keys[40]) translate(translation.x, translation.y + pixelDiff)
+			else if(keys[40] && !keys[38]) translate(translation.x, translation.y - pixelDiff)
+
+		}
+	}
+	else lastTranslationTime = undefined
+
+	if(zooming) {
+
+		var zoomTimeDiff = time - lastZoomTime
+
+		lastZoomTime = time
+
+		if(!isNaN(zoomTimeDiff)) {
+
+			var zoomDiff = zoomTimeDiff / 1000 * zoomSpeed
+
+			if(currentZoom < targetZoom) {
+				zoom(Math.min(currentZoom + zoomDiff, targetZoom))
+			}
+			else zoom(Math.max(currentZoom - zoomDiff, targetZoom))
+		}
+		
+	}
+	else lastZoomTime = undefined
+
+
+	requestAnimationFrame(animationInterval)
+
+}
+
+function translate (x, y) {
+
+	x = Math.round(x);
+	y = Math.round(y);
+
+	translation.x = x;
+	translation.y = y;
+
+	canvTranslationStyles.deleteRule("canvas")
+
+	canvTranslationStyles.insertRule("canvas.layers { left: " + x + "px; top: " + y + "px; }", 0)
+}
+
+
+function zoom (scale) {
+
+	currentZoom = scale
+
+	canvZoomStyles.deleteRule("canvas")
+
+	canvZoomStyles.insertRule("canvas.layers { transform: scale(" + scale + "); }", 0)
+}
+
+window.onwheel = function (e) {
+
+	if(e.deltaY > 0) {
+		if(targetZoom - 0.1 >= minZoom)
+			targetZoom -= 0.1
+
+		else targetZoom = minZoom
+	}
+	else {
+		if(targetZoom + 0.1 <= maxZoom)
+			targetZoom += 0.1
+
+		else targetZoom = maxZoom
+	}
+
+}
+
+
+generateMap()
+renderMap()
+animationInterval()
+
+
+function Raft (x, y) {
+	this.x = x
+	this.y = y
+}
+Raft.prototype.render = function (g) {
+
+	g.fillRect(this.x, this.y, 30, 30)
+}
+Raft.prototype.hitBox = function () {
+
+}
+
+</script>
+</body>
+</html>
